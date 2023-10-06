@@ -1,5 +1,107 @@
 <a name="Unreleased"></a>
-# [Unreleased](https://github.com/moleculerjs/moleculer/compare/v0.14.21...master)
+# [Unreleased](https://github.com/moleculerjs/moleculer/compare/v0.14.29...master)
+
+--------------------------------------------------
+<a name="0.14.31"></a>
+# [0.14.31](https://github.com/moleculerjs/moleculer/compare/v0.14.30...v0.14.31) (2023-08-06)
+
+## Changes
+- fix prometheus reporter to accept host option [#1221](https://github.com/moleculerjs/moleculer/pull/1221)
+- remove usage of _.uniq [#1211](https://github.com/moleculerjs/moleculer/pull/1211)
+- fix: started not being called when createService is used [#1229](https://github.com/moleculerjs/moleculer/pull/1229)  
+
+--------------------------------------------------
+<a name="0.14.30"></a>
+# [0.14.30](https://github.com/moleculerjs/moleculer/compare/v0.14.29...v0.14.30) (2023-07-15)
+
+## Changes
+- Improve d.ts files [#1208](https://github.com/moleculerjs/moleculer/pull/1208), [#1210](https://github.com/moleculerjs/moleculer/pull/1210), [#1225](https://github.com/moleculerjs/moleculer/pull/1225)
+- replace deprecated redis.setex with redis.set method [#1191](https://github.com/moleculerjs/moleculer/pull/1191)
+- rewrite `_.random` without lodash [#1212](https://github.com/moleculerjs/moleculer/pull/1212)  
+
+--------------------------------------------------
+<a name="0.14.29"></a>
+# [0.14.29](https://github.com/moleculerjs/moleculer/compare/v0.14.28...v0.14.29) (2023-03-12)
+
+## Changes
+- Improve lifecycle handler types [#1179](https://github.com/moleculerjs/moleculer/pull/1179)
+- add service list options & define getActionList type [#1182](https://github.com/moleculerjs/moleculer/pull/1182)
+- mergeSchema can be used to merge 2 mixins [#1187](https://github.com/moleculerjs/moleculer/pull/1187)
+- fix: do not emit send node info during broker stopping event [#1186](https://github.com/moleculerjs/moleculer/pull/1186)
+- Allow opt out of redlock in redis cacher [#1192](https://github.com/moleculerjs/moleculer/issues/1192)
+  
+--------------------------------------------------
+<a name="0.14.28"></a>
+# [0.14.28](https://github.com/moleculerjs/moleculer/compare/v0.14.27...v0.14.28) (2023-01-08)
+
+## Changes
+- fix no clean exit on shutdown, with disableBalancer: true [#1168](https://github.com/moleculerjs/moleculer/pull/1168)
+- change `__proto__` to `Object.getProtoTypeOf` [#1170](https://github.com/moleculerjs/moleculer/pull/1170)
+- fix merge schemas (handling nulls) [#1172](https://github.com/moleculerjs/moleculer/pull/1172)
+- fix hot reload error handling [#1174](https://github.com/moleculerjs/moleculer/issues/1174)
+- update d.ts file
+- update dependencies
+  
+--------------------------------------------------
+<a name="0.14.27"></a>
+# [0.14.27](https://github.com/moleculerjs/moleculer/compare/v0.14.26...v0.14.27) (2022-12-17)
+
+## Changes
+- fix typescript definitions in may commits.
+- prevent registerInternalServices deprecation warning [#1163](https://github.com/moleculerjs/moleculer/pull/1163)
+
+--------------------------------------------------
+<a name="0.14.26"></a>
+# [0.14.26](https://github.com/moleculerjs/moleculer/compare/v0.14.25...v0.14.26) (2022-11-09)
+
+## Changes
+- fix typescript definitions for the Service class [#1139](https://github.com/moleculerjs/moleculer/pull/1139)
+- allow matching hooks to multiple actions with "|" [#1149](https://github.com/moleculerjs/moleculer/pull/1149)
+- fix serializers datetime flaky test [#1151](https://github.com/moleculerjs/moleculer/pull/1151)
+
+--------------------------------------------------
+<a name="0.14.25"></a>
+# [0.14.25](https://github.com/moleculerjs/moleculer/compare/v0.14.24...v0.14.25) (2022-10-29)
+
+## Changes
+- fix Node 19 compatibility
+
+--------------------------------------------------
+<a name="0.14.24"></a>
+# [0.14.24](https://github.com/moleculerjs/moleculer/compare/v0.14.23...v0.14.24) (2022-10-10)
+
+## Changes
+- allow moleculer-runner to resolve configuration files from node_modules [#1126](https://github.com/moleculerjs/moleculer/pull/1126)
+- fixed slower broker startup time issue [#1132](https://github.com/moleculerjs/moleculer/issues/1132)
+- fixed memory leak at dynamic service creation [#1121](https://github.com/moleculerjs/moleculer/issues/1121)
+- fixed invalid 'undefined' type in validator schema. [#1137](https://github.com/moleculerjs/moleculer/issues/1137)
+- update dependencies
+
+--------------------------------------------------
+<a name="0.14.23"></a>
+# [0.14.23](https://github.com/moleculerjs/moleculer/compare/v0.14.22...v0.14.23) (2022-08-16)
+
+## Changes
+- fixed timeout issue in `waitForServices` method [#1123](https://github.com/moleculerjs/moleculer/issues/1123)
+- fixed metadata issue when compression enabled [#1122](https://github.com/moleculerjs/moleculer/issues/1122)
+
+--------------------------------------------------
+<a name="0.14.22"></a>
+# [0.14.22](https://github.com/moleculerjs/moleculer/compare/v0.14.21...v0.14.22) (2022-08-13)
+
+_35 commits from 11 contributors._
+
+## Changes
+- fixed 'Ctx is undefined when using shard strategy and preferLocal is false, throws error on emit' [#1072](https://github.com/moleculerjs/moleculer/issues/1072)
+- fixed info packet send at broker stop [#1101](https://github.com/moleculerjs/moleculer/pull/1101)
+- added support for either-or versions to waitForServices [#1030](https://github.com/moleculerjs/moleculer/pull/1030)
+- fixed streaming issue with compression [#1100](https://github.com/moleculerjs/moleculer/issues/1100)
+- add requestID to debug logs in transit [#1104](https://github.com/moleculerjs/moleculer/issues/1104)
+- removed static on methods for the use of ServiceFactory [#1098](https://github.com/moleculerjs/moleculer/issues/1098)
+- fixed the issue with setting tracing and metrics options with env variables [#1112](https://github.com/moleculerjs/moleculer/issues/1112)
+- added dependencyTimeout broker option [#1118](https://github.com/moleculerjs/moleculer/issues/1118)
+- improved d.ts [#1099](https://github.com/moleculerjs/moleculer/pull/1099) [#1111](https://github.com/moleculerjs/moleculer/pull/1111) [#1115](https://github.com/moleculerjs/moleculer/pull/1115)
+- updated dependencies
 
 --------------------------------------------------
 <a name="0.14.21"></a>

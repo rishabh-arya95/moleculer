@@ -468,6 +468,43 @@ const utils = {
 	},
 
 	/**
+	 * Get the name of constructor of an object.
+	 *
+	 * @param {Object} obj
+	 * @returns {String}
+	 */
+	getConstructorName(obj) {
+		if (obj == null) return undefined;
+
+		let target = obj.prototype;
+		if (target && target.constructor && target.constructor.name) {
+			return target.constructor.name;
+		}
+		if (obj.constructor && obj.constructor.name) {
+			return obj.constructor.name;
+		}
+		return undefined;
+	},
+
+	/**
+	 * Check whether the instance is an instance of the given class.
+	 *
+	 * @param {Object} instance
+	 * @param {Object} baseClass
+	 * @returns {Boolean}
+	 */
+	isInheritedClass(instance, baseClass) {
+		const baseClassName = module.exports.getConstructorName(baseClass);
+		let proto = instance;
+		while ((proto = Object.getPrototypeOf(proto))) {
+			const protoName = module.exports.getConstructorName(proto);
+			if (baseClassName == protoName) return true;
+		}
+
+		return false;
+	},
+
+	/**
 	 * Detects the argument names of a function.
 	 * Credits: https://github.com/sindresorhus/fn-args
 	 *
@@ -583,6 +620,44 @@ const utils = {
 					.map(x => x.trim())
 					.filter(Boolean)
 			: [];
+	},
+
+	/**
+	 * Creates a duplicate-free version of an array
+	 *
+	 * @param {Array<String|Number>} arr
+	 * @returns {Array<String|Number>}
+	 */
+	uniq(arr) {
+		return [...new Set(arr)];
+	},
+
+	/**
+	 * Produces a random floating number between the inclusive lower and upper bounds.
+	 *
+	 * @param {Number} a
+	 * @param {Number} b
+	 * @returns {Number}
+	 */
+	random(a = 1, b = 0) {
+		const lower = Math.min(a, b);
+		const upper = Math.max(a, b);
+
+		return lower + Math.random() * (upper - lower);
+	},
+
+	/**
+	 * Produces a random integer number between the inclusive lower and upper bounds.
+	 *
+	 * @param {Number} a
+	 * @param {Number} b
+	 * @returns {Number}
+	 */
+	randomInt(a = 1, b = 0) {
+		const lower = Math.ceil(Math.min(a, b));
+		const upper = Math.floor(Math.max(a, b));
+
+		return Math.floor(lower + Math.random() * (upper - lower + 1));
 	}
 };
 

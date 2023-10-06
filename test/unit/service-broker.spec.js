@@ -46,6 +46,13 @@ jest.mock("../../src/utils", () => ({
 	},
 	functionArguments() {
 		return ["ctx"];
+	},
+	deprecate() {},
+	uniq(arr) {
+		return [...new Set(arr)];
+	},
+	randomInt() {
+		return 2;
 	}
 }));
 polyfillPromise = jest.requireActual("../../src/utils").polyfillPromise;
@@ -53,9 +60,12 @@ polyfillPromise = jest.requireActual("../../src/utils").polyfillPromise;
 const utils = require("../../src/utils");
 utils.removeFromArray = jest.requireActual("../../src/utils").removeFromArray;
 utils.promiseAllControl = jest.requireActual("../../src/utils").promiseAllControl;
+utils.getConstructorName = jest.requireActual("../../src/utils").getConstructorName;
+utils.isInheritedClass = jest.requireActual("../../src/utils").isInheritedClass;
 
 const { protectReject } = require("./utils");
 const path = require("path");
+const _ = require("lodash");
 const lolex = require("@sinonjs/fake-timers");
 const ServiceBroker = require("../../src/service-broker");
 const Service = require("../../src/service");
@@ -233,7 +243,8 @@ describe("Test ServiceBroker constructor", () => {
 			disableBalancer: true,
 			registry: {
 				strategy: Strategies.Random,
-				preferLocal: false
+				preferLocal: false,
+				stopDelay: 100
 			},
 
 			circuitBreaker: {
@@ -276,6 +287,7 @@ describe("Test ServiceBroker constructor", () => {
 			internalServices: false,
 			internalMiddlewares: true,
 			dependencyInterval: 1000,
+			dependencyTimeout: 0,
 			hotReload: true,
 			middlewares: null,
 			replCommands: null,
@@ -508,20 +520,47 @@ describe("Test ServiceBroker constructor", () => {
 
 describe("Test broker.start", () => {
 	describe("without transporter", () => {
-		const schema = {
-			name: "test",
-			started: jest.fn()
-		};
+		let schema;
+		let optStarted;
+		let broker;
+		let svc;
 
-		const optStarted = jest.fn();
+		beforeEach(() => {
+			schema = {
+				name: "test",
+				started: jest.fn(() => Promise.resolve())
+			};
 
-		const broker = new ServiceBroker({
-			logger: false,
-			transporter: null,
-			started: optStarted
+			optStarted = jest.fn();
+			broker = new ServiceBroker({
+				logger: false,
+				transporter: null,
+				started: optStarted
+			});
+
+			svc = broker.createService(schema);
 		});
 
-		const svc = broker.createService(schema);
+		it("should call started of services, created whilst starting an initial service", async () => {
+			const shouldBeCalled = jest.fn();
+			const serviceStartingOthers = broker.createService({
+				name: "test",
+				started: () => {
+					broker.createService({
+						name: "test",
+						started: shouldBeCalled
+					});
+					broker.waitForServices("test");
+					// do something
+				}
+			});
+			broker.broadcastLocal = jest.fn();
+			broker.metrics.set = jest.fn();
+			broker.callMiddlewareHook = jest.fn();
+			broker.registry.regenerateLocalRawInfo = jest.fn();
+			await broker.start();
+			expect(shouldBeCalled).toHaveBeenCalledTimes(1);
+		});
 
 		it("should call started of services", async () => {
 			broker.services.forEach(svc => (svc._start = jest.fn()));
@@ -564,16 +603,40 @@ describe("Test broker.start", () => {
 			transporter: "Fake",
 			started: optStarted
 		});
-
+		broker.transit.connect = jest.fn(() => Promise.resolve());
+		broker.transit.ready = jest.fn(() => Promise.resolve());
+		broker.broadcastLocal = jest.fn();
+		broker.metrics.set = jest.fn();
+		broker.callMiddlewareHook = jest.fn();
 		const svc = broker.createService(schema);
 
+		it("should call started of services, created whilst starting an initial service", async () => {
+			const shouldBeCalled = jest.fn();
+
+			broker.createService({
+				name: "test2",
+				started: () => {
+					broker.createService({
+						name: "test3",
+						started: shouldBeCalled
+					});
+					broker.waitForServices("test");
+					// do something
+				}
+			});
+			await broker.start();
+			expect(shouldBeCalled).toHaveBeenCalledTimes(1);
+		});
+
 		it("should call started of services", async () => {
+			optStarted.mockClear();
+			broker.transit.connect.mockClear();
+			broker.transit.ready.mockClear();
+			broker.broadcastLocal.mockClear();
+			broker.metrics.set.mockClear();
+			broker.callMiddlewareHook.mockClear();
+
 			broker.services.forEach(svc => (svc._start = jest.fn()));
-			broker.transit.connect = jest.fn(() => Promise.resolve());
-			broker.transit.ready = jest.fn(() => Promise.resolve());
-			broker.broadcastLocal = jest.fn();
-			broker.metrics.set = jest.fn();
-			broker.callMiddlewareHook = jest.fn();
 			//broker.scope.enable = jest.fn();
 			//broker.tracer.restartScope = jest.fn();
 
@@ -761,7 +824,7 @@ describe("Test broker.stop", () => {
 
 			return broker.stop().then(() => {
 				expect(broker.registry.regenerateLocalRawInfo).toBeCalledTimes(1);
-				expect(broker.registry.regenerateLocalRawInfo).toBeCalledWith(true);
+				expect(broker.registry.regenerateLocalRawInfo).toBeCalledWith(true, true);
 				expect(broker.registry.discoverer.sendLocalNodeInfo).toBeCalledTimes(1);
 
 				expect(optStopped).toHaveBeenCalledTimes(1);
@@ -795,7 +858,7 @@ describe("Test broker.stop", () => {
 
 	describe("if stopped throw error", () => {
 		let broker;
-		let schema = {
+		const schema = {
 			name: "test",
 			stopped: jest.fn(() => Promise.reject("Can't stop!"))
 		};
@@ -1073,7 +1136,7 @@ describe("Test isTracingEnabled", () => {
 });
 
 describe("Test broker.getLogger", () => {
-	let broker = new ServiceBroker({ namespace: "test-ns", logger: false });
+	const broker = new ServiceBroker({ namespace: "test-ns", logger: false });
 
 	it("should call loggerFactory with module name", () => {
 		broker.loggerFactory.getLogger = jest.fn();
@@ -1105,7 +1168,7 @@ describe("Test broker.getLogger", () => {
 });
 
 describe("Test broker.fatal", () => {
-	let broker = new ServiceBroker({ logger: false });
+	const broker = new ServiceBroker({ logger: false });
 
 	broker.logger.fatal = jest.fn();
 	broker.logger.debug = jest.fn();
@@ -1136,11 +1199,11 @@ describe("Test broker.fatal", () => {
 });
 
 describe("Test loadServices", () => {
-	let broker = new ServiceBroker({ logger: false });
+	const broker = new ServiceBroker({ logger: false });
 	broker.loadService = jest.fn();
 
 	it("should load 5 services", () => {
-		let count = broker.loadServices("./test/services");
+		const count = broker.loadServices("./test/services");
 		expect(count).toBe(5);
 		expect(broker.loadService).toHaveBeenCalledTimes(5);
 		expect(broker.loadService).toHaveBeenCalledWith("test/services/users.service.js");
@@ -1152,7 +1215,7 @@ describe("Test loadServices", () => {
 
 	it("should load 1 services", () => {
 		broker.loadService.mockClear();
-		let count = broker.loadServices("./test/services", "users.*.js");
+		const count = broker.loadServices("./test/services", "users.*.js");
 		expect(count).toBe(1);
 		expect(broker.loadService).toHaveBeenCalledTimes(1);
 		expect(broker.loadService).toHaveBeenCalledWith("test/services/users.service.js");
@@ -1160,14 +1223,14 @@ describe("Test loadServices", () => {
 
 	it("should load 0 services", () => {
 		broker.loadService.mockClear();
-		let count = broker.loadServices();
+		const count = broker.loadServices();
 		expect(count).toBe(0);
 		expect(broker.loadService).toHaveBeenCalledTimes(0);
 	});
 
 	it("should load selected services", () => {
 		broker.loadService.mockClear();
-		let count = broker.loadServices("./test/services", ["users.service", "math.service"]);
+		const count = broker.loadServices("./test/services", ["users.service", "math.service"]);
 		expect(count).toBe(2);
 		expect(broker.loadService).toHaveBeenCalledTimes(2);
 		expect(broker.loadService).toHaveBeenCalledWith(
@@ -1180,13 +1243,13 @@ describe("Test loadServices", () => {
 });
 
 describe("Test broker.loadService", () => {
-	let broker = new ServiceBroker({ logger: false, hotReload: true });
+	const broker = new ServiceBroker({ logger: false, hotReload: true });
 	broker.createService = jest.fn(svc => svc);
 	broker._restartService = jest.fn();
 
 	it("should load service from schema", () => {
 		// Load schema
-		let service = broker.loadService("./test/services/math.service.js");
+		const service = broker.loadService("./test/services/math.service.js");
 		expect(service).toBeDefined();
 		expect(service.__filename).toBeDefined();
 		expect(broker.createService).toHaveBeenCalledTimes(1);
@@ -1196,7 +1259,7 @@ describe("Test broker.loadService", () => {
 	it("should call function which returns Service instance", () => {
 		broker.createService.mockClear();
 		broker._restartService.mockClear();
-		let service = broker.loadService("./test/services/users.service.js");
+		const service = broker.loadService("./test/services/users.service.js");
 		expect(service).toBeInstanceOf(broker.ServiceFactory);
 		expect(broker.createService).toHaveBeenCalledTimes(0);
 		expect(broker._restartService).toHaveBeenCalledTimes(0);
@@ -1205,7 +1268,7 @@ describe("Test broker.loadService", () => {
 	it("should call function which returns schema", () => {
 		broker.createService.mockClear();
 		broker._restartService.mockClear();
-		let service = broker.loadService("./test/services/posts.service.js");
+		const service = broker.loadService("./test/services/posts.service.js");
 		expect(service).toBeDefined();
 		expect(broker.createService).toHaveBeenCalledTimes(1);
 		expect(broker._restartService).toHaveBeenCalledTimes(0);
@@ -1214,7 +1277,7 @@ describe("Test broker.loadService", () => {
 	it("should load ES6 class", () => {
 		broker.createService.mockClear();
 		broker._restartService.mockClear();
-		let service = broker.loadService("./test/services/greeter.es6.service.js");
+		const service = broker.loadService("./test/services/greeter.es6.service.js");
 		expect(service).toBeDefined();
 		expect(broker.createService).toHaveBeenCalledTimes(0);
 		expect(broker._restartService).toHaveBeenCalledTimes(0);
@@ -1241,7 +1304,7 @@ describe("Test broker.loadService", () => {
 });
 
 describe("Test broker.loadService after broker started", () => {
-	let broker = new ServiceBroker({ logger: false, hotReload: true });
+	const broker = new ServiceBroker({ logger: false, hotReload: true });
 	broker.createService = jest.fn(svc => svc);
 	broker._restartService = jest.fn();
 
@@ -1250,7 +1313,7 @@ describe("Test broker.loadService after broker started", () => {
 
 	it("should load service from schema", () => {
 		// Load schema
-		let service = broker.loadService("./test/services/math.service.js");
+		const service = broker.loadService("./test/services/math.service.js");
 		expect(service).toBeDefined();
 		expect(service.__filename).toBeDefined();
 		expect(broker.createService).toHaveBeenCalledTimes(1);
@@ -1260,7 +1323,7 @@ describe("Test broker.loadService after broker started", () => {
 	it("should call function which returns Service instance", () => {
 		broker.createService.mockClear();
 		broker._restartService.mockClear();
-		let service = broker.loadService("./test/services/users.service.js");
+		const service = broker.loadService("./test/services/users.service.js");
 		expect(service).toBeInstanceOf(broker.ServiceFactory);
 		expect(broker.createService).toHaveBeenCalledTimes(0);
 		expect(broker._restartService).toHaveBeenCalledTimes(1);
@@ -1270,7 +1333,7 @@ describe("Test broker.loadService after broker started", () => {
 	it("should call function which returns schema", () => {
 		broker.createService.mockClear();
 		broker._restartService.mockClear();
-		let service = broker.loadService("./test/services/posts.service.js");
+		const service = broker.loadService("./test/services/posts.service.js");
 		expect(service).toBeDefined();
 		expect(broker.createService).toHaveBeenCalledTimes(1);
 		expect(broker._restartService).toHaveBeenCalledTimes(0);
@@ -1279,7 +1342,7 @@ describe("Test broker.loadService after broker started", () => {
 	it("should load ES6 class", () => {
 		broker.createService.mockClear();
 		broker._restartService.mockClear();
-		let service = broker.loadService("./test/services/greeter.es6.service.js");
+		const service = broker.loadService("./test/services/greeter.es6.service.js");
 		expect(service).toBeDefined();
 		expect(broker.createService).toHaveBeenCalledTimes(0);
 		expect(broker._restartService).toHaveBeenCalledTimes(1);
@@ -1288,41 +1351,55 @@ describe("Test broker.loadService after broker started", () => {
 });
 
 describe("Test broker.createService", () => {
-	let broker = new ServiceBroker({ logger: false });
+	const broker = new ServiceBroker({ logger: false });
 	broker.ServiceFactory = jest.fn((broker, schema) => schema);
-	broker.ServiceFactory.mergeSchemas = jest.fn();
 
 	it("should load math service", () => {
-		let schema = {
+		const schema = {
 			name: "test",
 			actions: {
 				empty() {}
 			}
 		};
 
-		let service = broker.createService(schema);
+		const service = broker.createService(schema);
 		expect(service).toBe(schema);
 		expect(broker.ServiceFactory).toHaveBeenCalledTimes(1);
-		expect(broker.ServiceFactory).toHaveBeenCalledWith(broker, schema);
+		expect(broker.ServiceFactory).toHaveBeenCalledWith(broker, schema, undefined);
+	});
+
+	it("should can't call mergeSchema if not give schema mods param", () => {
+		const broker = new ServiceBroker({ logger: false });
+		broker.ServiceFactory.prototype.mergeSchemas = jest.fn(schema => schema);
+		const schema = {
+			name: "test",
+			actions: {
+				empty() {}
+			}
+		};
+
+		broker.createService(schema);
+		expect(broker.ServiceFactory.prototype.mergeSchemas).toHaveBeenCalledTimes(0);
 	});
 
 	it("should call mergeSchema if give schema mods param", () => {
-		broker.ServiceFactory.mergeSchemas = jest.fn(s1 => s1);
-		let schema = {
+		const broker = new ServiceBroker({ logger: false });
+		broker.ServiceFactory.prototype.mergeSchemas = jest.fn(schema => schema);
+		const schema = {
 			name: "test",
 			actions: {
 				empty() {}
 			}
 		};
 
-		let mods = {
+		const mods = {
 			name: "other",
 			version: 2
 		};
 
 		broker.createService(schema, mods);
-		expect(broker.ServiceFactory.mergeSchemas).toHaveBeenCalledTimes(1);
-		expect(broker.ServiceFactory.mergeSchemas).toHaveBeenCalledWith(schema, mods);
+		expect(broker.ServiceFactory.prototype.mergeSchemas).toHaveBeenCalledTimes(1);
+		expect(broker.ServiceFactory.prototype.mergeSchemas).toHaveBeenCalledWith(schema, mods);
 	});
 
 	it("should load es6 class service", () => {
@@ -1336,7 +1413,7 @@ describe("Test broker.createService", () => {
 });
 
 describe("Test broker.__restartService", () => {
-	let broker = new ServiceBroker({ logger: false });
+	const broker = new ServiceBroker({ logger: false });
 
 	const schema = {
 		name: "test",
@@ -1641,6 +1718,10 @@ describe("Test broker.destroyService", () => {
 describe("Test broker.servicesChanged", () => {
 	let broker;
 
+	// Un-debounce the function
+	// Make it a regular function again
+	_.debounce = jest.fn(param => param);
+
 	broker = new ServiceBroker({
 		logger: false,
 		transporter: "Fake"
@@ -1648,11 +1729,6 @@ describe("Test broker.servicesChanged", () => {
 
 	broker.broadcastLocal = jest.fn();
 	broker.registry.discoverer.sendLocalNodeInfo = jest.fn();
-	// Un-debounce the function
-	// Make it a regular function again
-	broker.localServiceChanged = () => {
-		return broker.registry.discoverer.sendLocalNodeInfo();
-	};
 
 	beforeAll(() => broker.start());
 
@@ -1672,8 +1748,8 @@ describe("Test broker.servicesChanged", () => {
 
 	it("should call broadcastLocal & transit.sendNodeInfo", () => {
 		broker.broadcastLocal.mockClear();
+		broker.stopping = false;
 		broker.registry.discoverer.sendLocalNodeInfo.mockClear();
-
 		broker.servicesChanged(true);
 
 		expect(broker.broadcastLocal).toHaveBeenCalledTimes(1);
@@ -1682,6 +1758,20 @@ describe("Test broker.servicesChanged", () => {
 		});
 
 		expect(broker.registry.discoverer.sendLocalNodeInfo).toHaveBeenCalledTimes(1);
+	});
+
+	it("should not call transit.sendNodeInfo if broker is stopping", () => {
+		broker.broadcastLocal.mockClear();
+		broker.stopping = true;
+		broker.registry.discoverer.sendLocalNodeInfo.mockClear();
+		broker.servicesChanged(true);
+
+		expect(broker.broadcastLocal).toHaveBeenCalledTimes(1);
+		expect(broker.broadcastLocal).toHaveBeenCalledWith("$services.changed", {
+			localService: true
+		});
+
+		expect(broker.registry.discoverer.sendLocalNodeInfo).toHaveBeenCalledTimes(0);
 	});
 });
 
@@ -1696,21 +1786,18 @@ describe("Test broker.registerInternalServices", () => {
 		broker.registerInternalServices();
 
 		expect(broker.createService).toHaveBeenCalledTimes(1);
-		expect(broker.createService).toHaveBeenCalledWith(
-			{
-				name: "$node",
-				actions: {
-					list: expect.any(Object),
-					services: expect.any(Object),
-					actions: expect.any(Object),
-					events: expect.any(Object),
-					health: expect.any(Object),
-					options: expect.any(Object),
-					metrics: expect.any(Object)
-				}
-			},
-			undefined
-		);
+		expect(broker.createService).toHaveBeenCalledWith({
+			name: "$node",
+			actions: {
+				list: expect.any(Object),
+				services: expect.any(Object),
+				actions: expect.any(Object),
+				events: expect.any(Object),
+				health: expect.any(Object),
+				options: expect.any(Object),
+				metrics: expect.any(Object)
+			}
+		});
 	});
 
 	it("should register internal action with mixins", () => {
@@ -1729,25 +1816,25 @@ describe("Test broker.registerInternalServices", () => {
 		});
 
 		expect(broker.createService).toHaveBeenCalledTimes(1);
-		expect(broker.createService).toHaveBeenCalledWith(
-			{
-				name: "$node",
-				actions: {
-					list: expect.any(Object),
-					services: expect.any(Object),
-					actions: expect.any(Object),
-					events: expect.any(Object),
-					health: expect.any(Object),
-					options: expect.any(Object),
-					metrics: expect.any(Object)
-				}
+		expect(broker.createService).toHaveBeenCalledWith({
+			metadata: {
+				a: 5
 			},
-			{
-				metadata: {
-					a: 5
+			mixins: [
+				{
+					name: "$node",
+					actions: {
+						list: expect.any(Object),
+						services: expect.any(Object),
+						actions: expect.any(Object),
+						events: expect.any(Object),
+						health: expect.any(Object),
+						options: expect.any(Object),
+						metrics: expect.any(Object)
+					}
 				}
-			}
-		);
+			]
+		});
 	});
 });
 
@@ -1800,7 +1887,10 @@ describe("Test broker.getLocalService", () => {
 describe("Test broker.waitForServices", () => {
 	let broker = new ServiceBroker({ logger: false });
 	let res = false;
-	broker.registry.hasService = jest.fn(() => res);
+
+	beforeEach(() => {
+		broker.registry.hasService = jest.fn(() => res);
+	});
 
 	let clock;
 	beforeAll(() => (clock = lolex.install()));
@@ -1982,6 +2072,28 @@ describe("Test broker.waitForServices", () => {
 		return p;
 	});
 
+	it("should wait for a single service when passed multi-version service", () => {
+		broker.registry.hasService = jest.fn();
+		broker.registry.hasService.mockImplementation(name => name === "v1.posts");
+		let p = broker
+			.waitForServices([{ name: "posts", version: [1, 2] }], 10 * 1000, 50)
+			.catch(protectReject)
+			.then(result => {
+				expect(result).toEqual({
+					services: ["v1.posts", "v2.posts"],
+					statuses: [
+						{ name: "v1.posts", available: true },
+						{ name: "v2.posts", available: false }
+					]
+				});
+				expect(broker.registry.hasService).toHaveBeenCalledTimes(2);
+			});
+
+		clock.tick(500);
+
+		return p;
+	});
+
 	it("should skip duplicated services", () => {
 		res = false;
 		broker.registry.hasService.mockClear();
@@ -2064,13 +2176,13 @@ describe("Test broker.waitForServices", () => {
 	});
 });
 
-describe("Test waitForServices using dependencyInterval from options", () => {
+describe("Test waitForServices using dependencyInterval & dependencyTimeout from options", () => {
 	it("should call waitForServices with dependencyInterval from settings", async () => {
 		let broker = new ServiceBroker({ logger: false, dependencyInterval: 100 });
 		jest.spyOn(broker, "createService");
 		jest.spyOn(broker, "waitForServices");
 
-		let services = [
+		[
 			{ name: "users" },
 			{ name: "auth" },
 			{ name: "posts", dependencies: ["users", "auth"] }
@@ -2086,6 +2198,32 @@ describe("Test waitForServices using dependencyInterval from options", () => {
 			100,
 			broker.logger
 		);
+	});
+
+	it("should throw after dependencyTimeout is exceeded if dependencies still unavailable", async () => {
+		let broker = new ServiceBroker({
+			logger: false,
+			dependencyInterval: 100,
+			dependencyTimeout: 500
+		});
+
+		let started = false;
+		let timeoutErr = null;
+
+		const service = {
+			name: "posts",
+			async started() {
+				await this.waitForServices(["users"]).catch(err => (timeoutErr = err));
+
+				started = true;
+			}
+		};
+		broker.createService(service);
+
+		await broker.start();
+
+		expect(started).toEqual(true);
+		expect(timeoutErr).toBeInstanceOf(MoleculerServerError);
 	});
 
 	it("should start fast despite multiple levels of dependencies", async () => {

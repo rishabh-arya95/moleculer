@@ -70,7 +70,8 @@ const defaultOptions = {
 
 	registry: {
 		strategy: "RoundRobin",
-		preferLocal: true
+		preferLocal: true,
+		stopDelay: 100
 	},
 
 	circuitBreaker: {
@@ -104,12 +105,14 @@ const defaultOptions = {
 
 	validator: true,
 
-	metrics: false,
-	tracing: false,
+	metrics: { enabled: false },
+	tracing: { enabled: false },
 
 	internalServices: true,
 	internalMiddlewares: true,
+
 	dependencyInterval: 1000,
+	dependencyTimeout: 0,
 
 	hotReload: false,
 
@@ -183,6 +186,9 @@ class ServiceBroker {
 			// Broker started flag
 			this.started = false;
 
+			/** @type {Boolean} Broker is starting inital services flag*/
+			this.servicesStarting = false;
+
 			/** @type {Boolean} Broker stopping flag*/
 			this.stopping = false;
 
@@ -241,7 +247,7 @@ class ServiceBroker {
 			if (this.cacher) {
 				this.cacher.init(this);
 
-				const name = this.getConstructorName(this.cacher);
+				const name = utils.getConstructorName(this.cacher);
 				this.logger.info(`Cacher: ${name}`);
 			}
 
@@ -253,14 +259,14 @@ class ServiceBroker {
 			this.errorRegenerator = Errors.resolveRegenerator(this.options.errorRegenerator);
 			this.errorRegenerator.init(this);
 
-			const serializerName = this.getConstructorName(this.serializer);
+			const serializerName = utils.getConstructorName(this.serializer);
 			this.logger.info(`Serializer: ${serializerName}`);
 
 			// Validator
 			if (this.options.validator) {
 				this.validator = Validators.resolve(this.options.validator);
 				if (this.validator) {
-					const validatorName = this.getConstructorName(this.validator);
+					const validatorName = utils.getConstructorName(this.validator);
 					this.logger.info(`Validator: ${validatorName}`);
 					this.validator.init(this);
 				}
@@ -278,7 +284,7 @@ class ServiceBroker {
 				const tx = Transporters.resolve(this.options.transporter);
 				this.transit = new Transit(this, tx, this.options.transit);
 
-				const txName = this.getConstructorName(tx);
+				const txName = utils.getConstructorName(tx);
 				this.logger.info(`Transporter: ${txName}`);
 
 				if (this.options.disableBalancer) {
@@ -460,16 +466,19 @@ class ServiceBroker {
 			})
 			.then(() => {
 				// Call service `started` handlers
-				return this.Promise.all(this.services.map(svc => svc._start.call(svc))).catch(
-					err => {
-						/* istanbul ignore next */
-						this.logger.error("Unable to start all services.", err);
-						throw err;
-					}
-				);
+				const startingServices = this.services.map(svc => svc._start.call(svc));
+				// Set servicesStarting, so new services created from now on will be started when registered
+				this.servicesStarting = true;
+				// Wait for services `started` handlers
+				return this.Promise.all(startingServices).catch(err => {
+					/* istanbul ignore next */
+					this.logger.error("Unable to start all services.", err);
+					throw err;
+				});
 			})
 			.then(() => {
 				this.started = true;
+				this.servicesStarting = false;
 				this.metrics.set(METRIC.MOLECULER_BROKER_STARTED, 1);
 				this.broadcastLocal("$broker.started");
 			})
@@ -499,16 +508,20 @@ class ServiceBroker {
 	 */
 	stop() {
 		this.started = false;
-		this.stopping = true;
 		return this.Promise.resolve()
 			.then(() => {
 				if (this.transit) {
-					this.registry.regenerateLocalRawInfo(true);
+					this.registry.regenerateLocalRawInfo(true, true);
 					// Send empty node info in order to block incoming requests
 					return this.registry.discoverer.sendLocalNodeInfo();
 				}
 			})
 			.then(() => {
+				return this.Promise.delay(this.options.registry.stopDelay);
+			})
+			.then(() => {
+				this.stopping = true;
+
 				return this.callMiddlewareHook("stopping", [this], { reverse: true });
 			})
 			.then(() => {
@@ -772,20 +785,20 @@ class ServiceBroker {
 
 			let svc;
 			schema = this.normalizeSchemaConstructor(schema);
-			if (Object.prototype.isPrototypeOf.call(this.ServiceFactory, schema)) {
+			if (utils.isInheritedClass(schema, this.ServiceFactory)) {
 				// Service implementation
 				svc = new schema(this);
 
 				// If broker is started, call the started lifecycle event of service
-				if (this.started) this._restartService(svc);
+				if (this.started || this.servicesStarting) this._restartService(svc);
 			} else if (utils.isFunction(schema)) {
 				// Function
 				svc = schema(this);
-				if (!(svc instanceof this.ServiceFactory)) {
+				if (!utils.isInheritedClass(svc, this.ServiceFactory)) {
 					svc = this.createService(svc);
 				} else {
 					// If broker is started, call the started lifecycle event of service
-					if (this.started) this._restartService(svc);
+					if (this.started || this.servicesStarting) this._restartService(svc);
 				}
 			} else if (schema) {
 				// Schema object
@@ -824,14 +837,11 @@ class ServiceBroker {
 		if (Object.prototype.isPrototypeOf.call(this.ServiceFactory, schema)) {
 			service = new schema(this, schemaMods);
 		} else {
-			let s = schema;
-			if (schemaMods) s = this.ServiceFactory.mergeSchemas(schema, schemaMods);
-
-			service = new this.ServiceFactory(this, s);
+			service = new this.ServiceFactory(this, schema, schemaMods);
 		}
 
-		// If broker has started yet, call the started lifecycle event of service
-		if (this.started) this._restartService(service);
+		// If broker has began to start its initial services yet, call the started lifecycle event of service
+		if (this.started || this.servicesStarting) this._restartService(service);
 
 		return service;
 	}
@@ -938,7 +948,6 @@ class ServiceBroker {
 	 */
 	servicesChanged(localService = false) {
 		this.broadcastLocal("$services.changed", { localService });
-
 		// Should notify remote nodes, because our service list is changed.
 		if (localService && this.transit) {
 			this.localServiceChanged();
@@ -949,7 +958,9 @@ class ServiceBroker {
 	 * It's a debounced method to send INFO packets to remote nodes.
 	 */
 	localServiceChanged() {
-		this.registry.discoverer.sendLocalNodeInfo();
+		if (!this.stopping) {
+			this.registry.discoverer.sendLocalNodeInfo();
+		}
 	}
 
 	/**
@@ -960,7 +971,18 @@ class ServiceBroker {
 	 */
 	registerInternalServices(opts) {
 		opts = utils.isObject(opts) ? opts : {};
-		this.createService(require("./internals")(this), opts["$node"]);
+		const internalsSchema = require("./internals")(this);
+		let definitiveSchema = {};
+		// If it's present any custom definition, define it as the root schema and the default one as a mixin
+		if (opts["$node"]) {
+			definitiveSchema = opts["$node"];
+			if (!definitiveSchema.mixins) definitiveSchema.mixins = [];
+			definitiveSchema.mixins.push(internalsSchema);
+		} else {
+			// Otherwise, just use the default one
+			definitiveSchema = internalsSchema;
+		}
+		this.createService(definitiveSchema);
 	}
 
 	/**
@@ -999,48 +1021,79 @@ class ServiceBroker {
 	 *
 	 * @memberof ServiceBroker
 	 */
-	waitForServices(serviceNames, timeout, interval, logger = this.logger) {
+	waitForServices(
+		serviceNames,
+		timeout = this.options.dependencyTimeout,
+		interval = this.options.dependencyInterval,
+		logger = this.logger
+	) {
 		if (!Array.isArray(serviceNames)) serviceNames = [serviceNames];
 
-		serviceNames = _.uniq(
+		serviceNames = utils.uniq(
 			_.compact(
 				serviceNames.map(x => {
-					if (utils.isPlainObject(x) && x.name)
-						return this.ServiceFactory.getVersionedFullName(x.name, x.version);
-
-					if (utils.isString(x)) return x;
+					if (utils.isPlainObject(x) && x.name) {
+						if (Array.isArray(x.version)) {
+							return x.version.map(v =>
+								this.ServiceFactory.getVersionedFullName(x.name, v)
+							);
+						} else {
+							return this.ServiceFactory.getVersionedFullName(x.name, x.version);
+						}
+					} else if (utils.isString(x)) {
+						return x;
+					}
 				})
 			)
 		);
 
 		if (serviceNames.length == 0) return this.Promise.resolve({ services: [], statuses: [] });
 
-		logger.info(`Waiting for service(s) '${serviceNames.join(", ")}'...`);
+		logger.info(
+			`Waiting for service(s) '${serviceNames
+				.map(n => (Array.isArray(n) ? n.join(" OR ") : n))
+				.join(", ")}'...`
+		);
 
 		const startTime = Date.now();
 		return new this.Promise((resolve, reject) => {
 			const check = () => {
-				const serviceStatuses = serviceNames.map(serviceName => {
-					return {
-						name: serviceName,
-						available: this.registry.hasService(serviceName)
-					};
+				const serviceStatuses = serviceNames.map(name => {
+					if (Array.isArray(name)) {
+						return name.map(n => ({
+							name: n,
+							available: this.registry.hasService(n)
+						}));
+					} else {
+						return {
+							name,
+							available: this.registry.hasService(name)
+						};
+					}
 				});
+				const flattenedStatuses = _.flatMap(serviceStatuses, s => s);
+				const names = flattenedStatuses.map(s => s.name);
+				const availableServices = flattenedStatuses.filter(s => s.available);
 
-				const availableServices = serviceStatuses.filter(s => s.available);
-
-				if (availableServices.length == serviceNames.length) {
-					logger.info(`Service(s) '${serviceNames.join(", ")}' are available.`);
-					return resolve({ services: serviceNames, statuses: serviceStatuses });
+				const isReady = serviceStatuses.every(status =>
+					Array.isArray(status) ? status.some(n => n.available) : status.available
+				);
+				if (isReady) {
+					logger.info(
+						`Service(s) '${availableServices
+							.map(s => s.name)
+							.join(", ")}' are available.`
+					);
+					return resolve({ services: names, statuses: flattenedStatuses });
 				}
 
-				const unavailableServices = serviceStatuses.filter(s => !s.available);
+				const unavailableServices = flattenedStatuses.filter(s => !s.available);
 				logger.debug(
 					format(
 						"%d (%s) of %d services are available. %d (%s) are still unavailable. Waiting further...",
 						availableServices.length,
 						availableServices.map(s => s.name).join(", "),
-						serviceNames.length,
+						serviceStatuses.length,
 						unavailableServices.length,
 						unavailableServices.map(s => s.name).join(", ")
 					)
@@ -1052,11 +1105,11 @@ class ServiceBroker {
 							"Services waiting is timed out.",
 							500,
 							"WAITFOR_SERVICES",
-							{ services: serviceNames, statuses: serviceStatuses }
+							{ services: names, statuses: flattenedStatuses }
 						)
 					);
 
-				setTimeout(check, interval || this.options.dependencyInterval || 1000);
+				setTimeout(check, interval);
 			};
 
 			check();
@@ -1702,20 +1755,10 @@ class ServiceBroker {
 	}
 
 	/**
-	 * Get the Constructor name of any object if it exists
-	 * @param {any} obj
-	 * @returns {string}
-	 *
+	 * Only for backward compatibility
 	 */
 	getConstructorName(obj) {
-		let target = obj.prototype;
-		if (target && target.constructor && target.constructor.name) {
-			return target.constructor.name;
-		}
-		if (obj.constructor && obj.constructor.name) {
-			return obj.constructor.name;
-		}
-		return undefined;
+		return utils.getConstructorName(obj);
 	}
 
 	/**
@@ -1732,21 +1775,21 @@ class ServiceBroker {
 		// Sometimes the schame was loaded from another node_module or is a object copy.
 		// Then we will check if the constructor name is the same, asume that is a derivate object
 		// and adjust the prototype of the schema.
-		let serviceName = this.getConstructorName(this.ServiceFactory);
-		let target = this.getConstructorName(schema);
+		let serviceName = utils.getConstructorName(this.ServiceFactory);
+		let target = utils.getConstructorName(schema);
 		if (serviceName === target) {
 			Object.setPrototypeOf(schema, this.ServiceFactory);
 			return schema;
 		}
 		// Depending how the schema was create the correct constructor name (from base class) will be locate on __proto__.
-		target = this.getConstructorName(schema.__proto__);
+		target = utils.getConstructorName(Object.getPrototypeOf(schema));
 		if (serviceName === target) {
-			Object.setPrototypeOf(schema.__proto__, this.ServiceFactory);
+			Object.setPrototypeOf(Object.getPrototypeOf(schema), this.ServiceFactory);
 			return schema;
 		}
 		// This is just to handle some idiosyncrasies from Jest.
 		if (schema._isMockFunction) {
-			target = this.getConstructorName(schema.prototype.__proto__);
+			target = utils.getConstructorName(Object.getPrototypeOf(schema.prototype));
 			if (serviceName === target) {
 				Object.setPrototypeOf(schema, this.ServiceFactory);
 				return schema;

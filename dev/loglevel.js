@@ -18,14 +18,14 @@ const broker = new ServiceBroker({
 				//autoPadding: true
 			}
 		},
-		{
+		/*{
 			type: "File",
 			options: {
 				folder: "d:/logs",
 				filename: "moleculer-{date}.log",
 				formatter: "full"
 			}
-		}
+		}*/
 		/*{
 			type: "File",
 			options: {
@@ -84,11 +84,10 @@ const broker = new ServiceBroker({
 				}
 			}
 		},*/
-		/*{
+		{
 			type: "Datadog",
-			options: {
-			}
-		}*/
+			options: {}
+		}
 	],
 	logLevel: {
 		"MY.**": "trace",
@@ -120,27 +119,11 @@ const schema = {
 	}
 };
 
-broker.createService(
-	{
-		name: "greeter",
-		version: 2
-	},
-	schema
-);
+broker.createService({ ...schema, name: "greeter", version: 2 });
 
-broker.createService(
-	{
-		name: "test"
-	},
-	schema
-);
+broker.createService({ ...schema, name: "test" });
 
-broker.createService(
-	{
-		name: "hello"
-	},
-	schema
-);
+broker.createService({ ...schema, name: "hello" });
 
 const myLogger = broker.getLogger("my.custom.module");
 
